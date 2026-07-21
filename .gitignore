@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# BMAD tooling (installed by the BMAD installer; regenerable)
+_bmad/
+_bmad-output/
+.agents/
+.claude/skills/
+
+# Playwright plugin workspace
+.playwright/
+
+# Secrets — never commit environment files
+.env
+.env.*

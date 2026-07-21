@@ -9,6 +9,8 @@ GUI wrapper around your existing `ocrmypdf` installation.
 Built with Swift 6, SwiftUI, and no third-party dependencies. Targets Apple
 Silicon on macOS 15 or later.
 
+![VisionPDF processing a batch of scanned PDFs: per-file stages, overall progress, and live OCRmyPDF logs](docs/screenshot-processing.png)
+
 ## Requirements
 
 - macOS 15+ (developed and tested on macOS 27 / Xcode 27)
@@ -76,6 +78,13 @@ In Xcode: project **VisionPDF** → target **VisionPDF** → *Signing &
 Capabilities* → set *Team* to your personal team and leave *Automatically
 manage signing* on. For distribution to other machines you would additionally
 enable Hardened Runtime and notarize; for personal use this is unnecessary.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Empty state: drop zone inviting you to drop PDFs, with the options inspector alongside](docs/screenshot-dropzone.png) | ![Queue with three PDFs waiting and the OCR options inspector open](docs/screenshot-queue.png) |
+| ![Finished batch: every file marked Done with page counts and timings, full logs below](docs/screenshot-done.png) | ![Settings: OCRmyPDF executable path, re-detection, and Apple Vision plugin status](docs/screenshot-settings.png) |
 
 ## Architecture
 
@@ -153,7 +162,6 @@ full user-level file access (like any Terminal command you run today).
 - Files are processed sequentially by design; parallelism is per-file via
   OCRmyPDF's own `--jobs`.
 - The queue is not persisted across app launches.
-- App icon is a placeholder (empty icon set).
 
 ## License
 

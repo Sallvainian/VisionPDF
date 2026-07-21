@@ -154,3 +154,7 @@ full user-level file access (like any Terminal command you run today).
   OCRmyPDF's own `--jobs`.
 - The queue is not persisted across app launches.
 - App icon is a placeholder (empty icon set).
+
+## License
+
+[MIT](LICENSE)

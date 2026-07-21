@@ -1,0 +1,261 @@
+name: Release
+
+# Builds, signs, and notarizes VisionPDF.app, then packages it as a universal
+# (arm64 + x86_64) .dmg and .zip.
+#
+# - Called by release-please.yml (the normal path): builds and attaches the
+#   artifacts to the GitHub Release release-please just published.
+# - Run manually (Actions -> Release -> Run workflow): builds and uploads the
+#   artifacts to the workflow run only; never touches a Release. Use to test.
+#
+# Signing/notarization degrade gracefully when the secrets are absent (e.g. on
+# a fork): the build stays unsigned and un-notarized, and the job still
+# succeeds.
+#
+# Secrets used (same names as the Toddo repo):
+#   MAC_CSC_LINK          base64 of the Developer ID Application .p12
+#                         (3DES-encrypted — macOS `security import` rejects
+#                         OpenSSL 3's AES default)
+#   MAC_CSC_KEY_PASSWORD  password for that .p12
+#   APPLE_API_KEY         base64 of the App Store Connect API AuthKey_*.p8
+#   APPLE_API_KEY_ID      key ID of that API key
+#   APPLE_API_ISSUER      App Store Connect issuer ID
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      attach_to_tag:
+        description: 'Existing release tag to attach built assets to (release-please path). Empty for manual runs.'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  DEVELOPMENT_TEAM: W778837A9L  # Frank Cottone — Developer ID team (not secret; it is embedded in every signature)
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      # Version.xcconfig is the single source of truth (bumped by
+      # release-please). On the release-please path, refuse to ship a
+      # mislabeled build: the tag must match it.
+      - name: Resolve version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^MARKETING_VERSION *= *//p' Version.xcconfig | tr -d '[:space:]')
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not parse MARKETING_VERSION from Version.xcconfig (got '$VERSION')"; exit 1
+          fi
+          if [ -n "${{ inputs.attach_to_tag }}" ] && [ "v$VERSION" != "${{ inputs.attach_to_tag }}" ]; then
+            echo "::error::Tag ${{ inputs.attach_to_tag }} does not match Version.xcconfig (v$VERSION)"; exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building VisionPDF $VERSION"
+
+      # Import the Developer ID cert into a throwaway keychain. No-op
+      # (unsigned build) when the secret is absent.
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        run: |
+          set -o pipefail
+          if [ -z "$MAC_CSC_LINK" ]; then
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            echo "No MAC_CSC_LINK secret -> unsigned build."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$MAC_CSC_LINK" | tr -d '[:space:]' | openssl base64 -d -A > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MAC_CSC_KEY_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Developer ID Application" \
+            || { echo "::error::No Developer ID Application identity found after import"; exit 1; }
+          echo "SIGNED=true" >> "$GITHUB_ENV"
+
+      # notarytool --key needs a FILE PATH — decode the base64 secret to disk
+      # and validate it.
+      - name: Prepare notarization key
+        shell: bash
+        env:
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -o pipefail
+          if [ "$SIGNED" = "true" ] && [ -n "$APPLE_API_KEY_B64" ]; then
+            printf '%s' "$APPLE_API_KEY_B64" | tr -d '[:space:]' | openssl base64 -d -A > "$RUNNER_TEMP/AuthKey.p8"
+            if ! grep -q "BEGIN PRIVATE KEY" "$RUNNER_TEMP/AuthKey.p8"; then
+              echo "::error::Decoded APPLE_API_KEY is not a valid .p8 — check the secret is base64 of the AuthKey_*.p8 file"; exit 1
+            fi
+            echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+            echo "NOTARIZE=true" >> "$GITHUB_ENV"
+          else
+            echo "NOTARIZE=false" >> "$GITHUB_ENV"
+            echo "Signing disabled or no APPLE_API_KEY secret -> build will be un-notarized."
+          fi
+
+      # Notarization requires the hardened runtime and a secure timestamp, so
+      # both are forced here rather than relying on project settings.
+      - name: Archive
+        shell: bash
+        run: |
+          set -o pipefail
+          if [ "$SIGNED" = "true" ]; then
+            xcodebuild archive \
+              -project VisionPDF.xcodeproj -scheme VisionPDF -configuration Release \
+              -destination 'generic/platform=macOS' \
+              -archivePath "$RUNNER_TEMP/VisionPDF.xcarchive" \
+              CODE_SIGN_STYLE=Manual \
+              CODE_SIGN_IDENTITY="Developer ID Application" \
+              DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+              ENABLE_HARDENED_RUNTIME=YES \
+              OTHER_CODE_SIGN_FLAGS="--timestamp"
+          else
+            xcodebuild archive \
+              -project VisionPDF.xcodeproj -scheme VisionPDF -configuration Release \
+              -destination 'generic/platform=macOS' \
+              -archivePath "$RUNNER_TEMP/VisionPDF.xcarchive" \
+              CODE_SIGNING_ALLOWED=NO
+          fi
+
+      - name: Export app
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p dist
+          if [ "$SIGNED" != "true" ]; then
+            cp -R "$RUNNER_TEMP/VisionPDF.xcarchive/Products/Applications/VisionPDF.app" dist/
+            echo "Exported unsigned app straight from the archive."
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>developer-id</string>
+            <key>destination</key>
+            <string>export</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Developer ID Application</string>
+            <key>teamID</key>
+            <string>${DEVELOPMENT_TEAM}</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/VisionPDF.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+          cp -R "$RUNNER_TEMP/export/VisionPDF.app" dist/
+
+      # Notarize + staple the app FIRST, then build the final .zip/.dmg from
+      # the stapled app so the ticket ships inside both artifacts.
+      - name: Notarize, staple & package
+        shell: bash
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -o pipefail
+          notarize() {
+            # `if !` keeps errexit from killing the function before we can
+            # fetch the notarization log — the one artifact that explains a
+            # failed submission.
+            local file="$1" out id status
+            if ! out=$(xcrun notarytool submit "$file" \
+              --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" \
+              --wait --output-format json); then
+              out="${out:-}"
+            fi
+            echo "$out"
+            id=$(echo "$out" | jq -r '.id // empty' 2>/dev/null || true)
+            status=$(echo "$out" | jq -r '.status // empty' 2>/dev/null || true)
+            if [ "$status" != "Accepted" ]; then
+              echo "::error::Notarization of $file failed with status: ${status:-<no status returned>}"
+              if [ -n "$id" ]; then
+                xcrun notarytool log "$id" \
+                  --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" || true
+              fi
+              return 1
+            fi
+          }
+          if [ "$NOTARIZE" = "true" ]; then
+            ditto -c -k --keepParent dist/VisionPDF.app "$RUNNER_TEMP/VisionPDF-notarize.zip"
+            notarize "$RUNNER_TEMP/VisionPDF-notarize.zip"
+            xcrun stapler staple dist/VisionPDF.app
+          fi
+          ditto -c -k --keepParent dist/VisionPDF.app "dist/VisionPDF-$VERSION.zip"
+          mkdir "$RUNNER_TEMP/dmg-root"
+          cp -R dist/VisionPDF.app "$RUNNER_TEMP/dmg-root/"
+          ln -s /Applications "$RUNNER_TEMP/dmg-root/Applications"
+          hdiutil create -volname "VisionPDF" -srcfolder "$RUNNER_TEMP/dmg-root" -ov -format UDZO \
+            "dist/VisionPDF-$VERSION.dmg"
+          if [ "$SIGNED" = "true" ]; then
+            codesign --sign "Developer ID Application" --timestamp "dist/VisionPDF-$VERSION.dmg"
+          fi
+          if [ "$NOTARIZE" = "true" ]; then
+            notarize "dist/VisionPDF-$VERSION.dmg"
+            xcrun stapler staple "dist/VisionPDF-$VERSION.dmg"
+          fi
+
+      # Prove what we're about to ship passes Gatekeeper before uploading it.
+      - name: Verify signature & notarization
+        shell: bash
+        run: |
+          set -o pipefail
+          if [ "$SIGNED" != "true" ]; then
+            echo "Unsigned build -> skipping Gatekeeper verification."
+            exit 0
+          fi
+          codesign --verify --deep --strict --verbose=2 dist/VisionPDF.app
+          if [ "$NOTARIZE" = "true" ]; then
+            spctl --assess --type execute --verbose dist/VisionPDF.app
+            spctl --assess --type open --context context:primary-signature --verbose "dist/VisionPDF-$VERSION.dmg"
+          fi
+
+      # release-please path: attach the artifacts to the release release-please
+      # created for this tag.
+      - name: Attach assets to release (release-please)
+        if: inputs.attach_to_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*.dmg dist/*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No build artifacts found in dist/ to upload"; exit 1
+          fi
+          printf 'Uploading %s\n' "${files[@]}"
+          gh release upload "${{ inputs.attach_to_tag }}" "${files[@]}" --clobber
+
+      - name: Upload artifacts (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visionpdf-mac
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error

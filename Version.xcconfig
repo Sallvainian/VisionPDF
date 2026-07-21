@@ -1,0 +1,11 @@
+// VisionPDF version — the single source of truth. The Xcode project reads it
+// via the project-level base configuration; targets must not set their own
+// MARKETING_VERSION / CURRENT_PROJECT_VERSION or they will shadow this file.
+//
+// Bumped automatically by release-please: the annotations below mark the block
+// it rewrites in each release PR. Do not edit the versions by hand.
+
+// x-release-please-start-version
+MARKETING_VERSION = 1.0.0
+CURRENT_PROJECT_VERSION = 1.0.0
+// x-release-please-end

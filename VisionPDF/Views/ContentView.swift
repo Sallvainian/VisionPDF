@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -60,6 +61,24 @@ struct ContentView: View {
             FirstLaunchView()
         }
         .onReceive(NotificationCenter.default.publisher(for: .visionPDFAddFiles)) { _ in
+            presentFileImporter()
+        }
+    }
+
+    /// Single entry point for showing the file importer (menu ⌘O, toolbar
+    /// button, drop-zone button). Setting `showFileImporter = true` while
+    /// another presentation occupies the window (e.g. the clear-queue dialog)
+    /// latches the flag without showing a panel, and SwiftUI ignores repeat
+    /// `true` assignments — the importer would stay dead until relaunch.
+    private func presentFileImporter() {
+        guard !showClearConfirmation,
+              NSApp.mainWindow?.attachedSheet == nil else { return }
+        if showFileImporter {
+            // Latched by an earlier swallowed request: bounce through false so
+            // SwiftUI sees a fresh transition and actually presents.
+            showFileImporter = false
+            Task { showFileImporter = true }
+        } else {
             showFileImporter = true
         }
     }
@@ -68,7 +87,7 @@ struct ContentView: View {
         Group {
             if model.queue.items.isEmpty {
                 DropZoneView(isTargeted: isDropTargeted) {
-                    showFileImporter = true
+                    presentFileImporter()
                 }
             } else {
                 QueueListView(isDropTargeted: isDropTargeted)
@@ -101,7 +120,7 @@ struct ContentView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                showFileImporter = true
+                presentFileImporter()
             } label: {
                 Label("Add PDFs", systemImage: "plus")
             }

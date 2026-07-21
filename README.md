@@ -15,14 +15,19 @@ Silicon on macOS 15 or later.
 
 - macOS 15+ (developed and tested on macOS 27 / Xcode 27)
 - Xcode 16 or newer (Swift 6 toolchain)
-- A working OCRmyPDF installation, e.g.:
+- A working OCRmyPDF installation, e.g. with [uv](https://docs.astral.sh/uv/):
 
   ```sh
+  # OCRmyPDF alone (uses the built-in Tesseract engine)
+  uv tool install ocrmypdf
+
+  # OCRmyPDF with the Apple Vision plugin
   uv tool install --with ocrmypdf-appleocr ocrmypdf
   ```
 
   The Apple Vision plugin is optional — without it, VisionPDF uses Tesseract.
-  VisionPDF never installs software itself.
+  Already installed OCRmyPDF alone? Re-run the second command to add the
+  plugin. VisionPDF never installs software itself.
 
 ## Building in Xcode
 
